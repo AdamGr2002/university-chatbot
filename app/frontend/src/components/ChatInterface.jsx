@@ -40,6 +40,16 @@ function ChatInterface() {
         headers: { Authorization: `Bearer ${token}` }
       });
       setChatHistory(response.data.history);
+
+      // If there's a current chat, make sure it's selected in the UI
+      if (currentChatId) {
+        const today = new Date().toISOString().split('T')[0];
+        const todayChats = response.data.history[today] || [];
+        const currentChat = todayChats.find(chat => chat.id === currentChatId);
+        if (currentChat) {
+          onSelectChat(currentChat.id);
+        }
+      }
     } catch (error) {
       console.error('Error fetching chat history:', error);
     }
@@ -66,6 +76,8 @@ function ChatInterface() {
       // Update currentChatId if a new chat was created
       if (!currentChatId) {
         setCurrentChatId(response.data.chat_id);
+        // Fetch updated chat history
+        await fetchChatHistory();
       }
     } catch (error) {
       console.error('Error sending message:', error);
@@ -83,6 +95,19 @@ function ChatInterface() {
       setMessages(response.data.messages);
     } catch (error) {
       console.error('Error fetching chat:', error);
+    }
+  };
+
+  const onSelectChat = async (chatId) => {
+    setCurrentChatId(chatId);
+    try {
+      const token = await getToken();
+      const response = await axios.get(`http://localhost:8000/chat/${chatId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setMessages(response.data.messages);
+    } catch (error) {
+      console.error('Error fetching chat messages:', error);
     }
   };
 

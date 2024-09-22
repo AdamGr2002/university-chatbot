@@ -92,7 +92,28 @@ def process_text(text):
     except Exception as e:
         logger.error(f"Error processing text: {str(e)}")
         raise HTTPException(status_code=500, detail="Error processing text")
+def migrate():
+    conn = sqlite3.connect('chatbot.db')
+    cursor = conn.cursor()
 
+    # Check if the content column exists
+    cursor.execute("PRAGMA table_info(messages)")
+    columns = [column[1] for column in cursor.fetchall()]
+
+    if 'content' not in columns:
+        # Add the content column
+        cursor.execute("ALTER TABLE messages ADD COLUMN content TEXT")
+        print("Added 'content' column to messages table")
+    else:
+        print("'content' column already exists in messages table")
+
+    # If you need to rename an existing column (e.g., if 'message' was used instead of 'content')
+    # Uncomment and modify the following lines:
+    # cursor.execute("ALTER TABLE messages RENAME COLUMN message TO content")
+    # print("Renamed 'message' column to 'content' in messages table")
+
+    conn.commit()
+    conn.close()
 # Intent matching function
 def match_intent(processed_text, context):
     db = get_db()
@@ -147,10 +168,16 @@ def match_intent(processed_text, context):
 async def get_user_messages(user: dict = Depends(verify_token)):
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT message, is_user FROM user_messages WHERE user_id = ? ORDER BY id", (user['sub'],))
+    cursor.execute("""
+        SELECT m.content, m.is_user 
+        FROM messages m
+        JOIN chats c ON m.chat_id = c.id
+        WHERE c.user_id = ?
+        ORDER BY m.timestamp
+    """, (user['sub'],))
     messages = cursor.fetchall()
     db.close()
-    return {"messages": [{"text": row['message'], "isUser": row['is_user']} for row in messages]}
+    return {"messages": [{"text": msg[0], "isUser": bool(msg[1])} for msg in messages]}
 
 def save_user_message(user_id: str, message: str, is_user: bool):
     db = get_db()
@@ -182,73 +209,86 @@ create_user_messages_table()
 async def get_chat_history(user: dict = Depends(verify_token)):
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT id, title, timestamp FROM chats WHERE user_id = ? ORDER BY timestamp DESC", (user['sub'],))
+    cursor.execute("""
+        SELECT id, title, DATE(timestamp) as date, timestamp 
+        FROM chats 
+        WHERE user_id = ? 
+        ORDER BY timestamp DESC
+    """, (user['sub'],))
     history = cursor.fetchall()
     db.close()
-    return {"history": [{"id": row['id'], "title": row['title'], "timestamp": row['timestamp']} for row in history]}
+    
+    # Group chats by date
+    grouped_history = {}
+    for chat in history:
+        date = chat['date']
+        if date not in grouped_history:
+            grouped_history[date] = []
+        grouped_history[date].append({
+            "id": chat['id'],
+            "title": chat['title'],
+            "timestamp": chat['timestamp']
+        })
+    
+    return {"history": grouped_history}
 
 @app.get("/chat/{chat_id}")
-async def get_chat(chat_id: int, user: dict = Depends(verify_token)):
+async def get_chat_messages(chat_id: int, user: dict = Depends(verify_token)):
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT message, is_user FROM messages WHERE chat_id = ? ORDER BY id", (chat_id,))
+    cursor.execute("""
+        SELECT content, is_user, timestamp 
+        FROM messages 
+        WHERE chat_id = ? 
+        ORDER BY timestamp
+    """, (chat_id,))
     messages = cursor.fetchall()
     db.close()
-    return {"messages": [{"text": row['message'], "isUser": row['is_user']} for row in messages]}
+    
+    return {
+        "messages": [
+            {"text": msg['content'], "isUser": bool(msg['is_user']), "timestamp": msg['timestamp']}
+            for msg in messages
+        ]
+    }
 
 @app.post("/chat")
-async def chat(message: Message, user: dict = Depends(verify_token)):
-    try:
-        logger.info(f"Received message from user {user['sub']}: {message.user_input}")
-        
-        processed_text = process_text(message.user_input)
-        logger.info(f"Processed text: {processed_text}")
-        
-        context = conversation_history.get_context()
-        logger.info(f"Context: {context}")
-        
-        response, similarity = scraper_get_answer(message.user_input)
-        logger.info(f"Response from get_answer: {response} (Similarity: {similarity})")
-        
-        db = get_db()
-        cursor = db.cursor()
-        
-        # Create a new chat if chat_id is not provided
-        if message.chat_id is None:
-            cursor.execute("INSERT INTO chats (user_id, title) VALUES (?, ?)", (user['sub'], message.user_input[:30]))
-            chat_id = cursor.lastrowid
-        else:
-            chat_id = message.chat_id
-        
-        # Save the user message
-        cursor.execute("INSERT INTO messages (chat_id, message, is_user) VALUES (?, ?, ?)", (chat_id, message.user_input, True))
-        
-        if similarity > 60:  # Adjust this threshold as needed
-            summarized_response = summarize_response(response)
-            logger.info(f"Summarized response: {summarized_response}")
-            conversation_history.add(message.user_input, summarized_response)
-            
-            # Save the bot response
-            cursor.execute("INSERT INTO messages (chat_id, message, is_user) VALUES (?, ?, ?)", (chat_id, summarized_response, False))
-            
-            db.commit()
-            db.close()
-            return {"message": summarized_response, "method": "intent_matching", "similarity": similarity, "chat_id": chat_id}
-        else:
-            logger.info("No good match found, using default response")
-            default_response = "Je suis désolé, je n'ai pas de réponse précise à cette question. Pouvez-vous reformuler ou poser une autre question ?"
-            conversation_history.add(message.user_input, default_response)
-            
-            # Save the bot response
-            cursor.execute("INSERT INTO messages (chat_id, message, is_user) VALUES (?, ?, ?)", (chat_id, default_response, False))
-            
-            db.commit()
-            db.close()
-            return {"message": default_response, "method": "default", "similarity": similarity, "chat_id": chat_id}
-    except Exception as e:
-        logger.error(f"An error occurred: {str(e)}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+async def create_chat(request: dict, user: dict = Depends(verify_token)):
+    user_input = request.get("user_input")
+    chat_id = request.get("chat_id")
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    if not chat_id:
+        # Create a new chat
+        cursor.execute("""
+            INSERT INTO chats (user_id, title, timestamp) 
+            VALUES (?, ?, datetime('now'))
+        """, (user['sub'], user_input[:30]))  # Use first 30 chars of input as title
+        chat_id = cursor.lastrowid
+    
+    # Add the message to the chat
+    cursor.execute("""
+        INSERT INTO messages (chat_id, content, is_user, timestamp)
+        VALUES (?, ?, ?, datetime('now'))
+    """, (chat_id, user_input, True))
+    
+    # Generate bot response (replace this with your actual bot logic)
+    bot_response = match_intent(user_input, chat_id)
+    
+    cursor.execute("""
+        INSERT INTO messages (chat_id, content, is_user, timestamp)
+        VALUES (?, ?, ?, datetime('now'))
+    """, (chat_id, bot_response, False))
+    
+    db.commit()
+    db.close()
+    
+    return {
+        "message": bot_response,
+        "chat_id": chat_id
+    }
 
 from collections import deque
 
@@ -335,7 +375,7 @@ def create_tables():
     CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         chat_id INTEGER NOT NULL,
-        message TEXT NOT NULL,
+        content TEXT NOT NULL,
         is_user BOOLEAN NOT NULL,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (chat_id) REFERENCES chats (id)
@@ -345,10 +385,41 @@ def create_tables():
     db.commit()
     db.close()
 
+print("Tables created successfully")
+
 # Call this function when your app starts
-create_tables()
+
+def migrate_messages_table():
+    db = get_db()
+    cursor = db.cursor()
+    
+    # Drop the existing messages table
+    cursor.execute("DROP TABLE IF EXISTS messages")
+    
+    # Create the new messages table
+    cursor.execute("""
+    CREATE TABLE messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        is_user BOOLEAN NOT NULL,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (chat_id) REFERENCES chats (id)
+    )
+    """)
+    
+    print("Recreated messages table with correct structure")
+    
+    db.commit()
+    db.close()
+
+# Call this function after create_tables()
 
 if __name__ == "__main__":
+    migrate()
+    create_tables()
+    migrate_messages_table()
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 

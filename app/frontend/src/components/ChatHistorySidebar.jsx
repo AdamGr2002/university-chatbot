@@ -1,19 +1,10 @@
 import React from 'react';
 
 function ChatHistorySidebar({ chatHistory, onSelectChat }) {
-  const groupedHistory = chatHistory.reduce((acc, chat) => {
-    const date = new Date(chat.timestamp).toLocaleDateString();
-    if (!acc[date]) {
-      acc[date] = [];
-    }
-    acc[date].push(chat);
-    return acc;
-  }, {});
-
   return (
     <div className="overflow-y-auto h-full">
       <h3 className="text-xl font-semibold p-6 bg-indigo-800">Chat History</h3>
-      {Object.entries(groupedHistory).map(([date, chats]) => (
+      {Object.entries(chatHistory).map(([date, chats]) => (
         <div key={date} className="mb-4">
           <h4 className="text-sm font-medium text-indigo-300 px-6 py-2">{date}</h4>
           {chats.map((chat) => (
