@@ -3,8 +3,9 @@ import ReactDOM from 'react-dom';
 import { ClerkProvider } from '@clerk/clerk-react';
 import App from './App';
 import reportWebVitals from './reportWebVitals';
-// Access the environment variable
-const clerkPubKey = process.env.REACT_APP_CLERK_PUBLISHABLE_KEY;
+import './index.css';
+// Access the Clerk publishable key from the injected environment variable
+const clerkPubKey = window.ENV.VITE_CLERK_PUBLISHABLE_KEY;
 
 if (!clerkPubKey) {
   throw new Error('Missing Clerk Publishable Key');
@@ -12,7 +13,7 @@ if (!clerkPubKey) {
 
 ReactDOM.render(
   <React.StrictMode>
-    <ClerkProvider publishableKey={clerkPubKey}>
+    <ClerkProvider publishableKey={clerkPubKey} afterSignOutUrl="/">
       <App />
     </ClerkProvider>
   </React.StrictMode>,
