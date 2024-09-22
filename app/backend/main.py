@@ -1,7 +1,8 @@
 import nltk
 import logging
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
@@ -13,12 +14,15 @@ import os
 import sqlite3
 import traceback
 import numpy as np
+import jwt
+from jwt import PyJWTError
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+security = HTTPBearer()
 
 # Set up CORS
 app.add_middleware(
@@ -47,6 +51,19 @@ except Exception as e:
 
 class Message(BaseModel):
     user_input: str
+
+class UserMessage(BaseModel):
+    user_id: str
+    message: str
+    is_user: bool
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    try:
+        token = credentials.credentials
+        payload = jwt.decode(token, options={"verify_signature": False})
+        return payload
+    except PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 # NLP processing function
 def process_text(text):
@@ -125,9 +142,9 @@ def match_intent(processed_text, context):
         return None
 
 @app.post("/chat")
-async def chat(message: Message):
+async def chat(message: Message, user: dict = Depends(verify_token)):
     try:
-        logger.info(f"Received message: {message.user_input}")
+        logger.info(f"Received message from user {user['sub']}: {message.user_input}")
         
         processed_text = process_text(message.user_input)
         logger.info(f"Processed text: {processed_text}")
@@ -139,13 +156,53 @@ async def chat(message: Message):
         if response:
             logger.info(f"Response from match_intent: {response[:100]}...")
             conversation_history.add(message.user_input, response)
+            save_user_message(user['sub'], message.user_input, True)
+            save_user_message(user['sub'], response, False)
             return {"message": response, "method": "intent_matching"}
         else:
             logger.info("No response found")
-            return {"message": "Je suis désolé, je n'ai pas de réponse à cette question.", "method": "default"}
+            default_response = "Je suis désolé, je n'ai pas de réponse à cette question."
+            save_user_message(user['sub'], message.user_input, True)
+            save_user_message(user['sub'], default_response, False)
+            return {"message": default_response, "method": "default"}
     except Exception as e:
         logger.error(f"An error occurred: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/user_messages")
+async def get_user_messages(user: dict = Depends(verify_token)):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT message, is_user FROM user_messages WHERE user_id = ? ORDER BY id", (user['sub'],))
+    messages = cursor.fetchall()
+    db.close()
+    return {"messages": [{"text": row['message'], "isUser": row['is_user']} for row in messages]}
+
+def save_user_message(user_id: str, message: str, is_user: bool):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("INSERT INTO user_messages (user_id, message, is_user) VALUES (?, ?, ?)", (user_id, message, is_user))
+    db.commit()
+    db.close()
+
+# Add this function to create the user_messages table
+def create_user_messages_table():
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS user_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        message TEXT NOT NULL,
+        is_user BOOLEAN NOT NULL,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    db.commit()
+    db.close()
+
+# Call this function when your app starts
+create_user_messages_table()
 
 @app.get("/chat_history")
 async def get_chat_history():

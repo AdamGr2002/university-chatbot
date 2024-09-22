@@ -1,14 +1,22 @@
 import React from 'react';
-import ReactDOM from 'react-dom/client';
-import './index.css';
+import ReactDOM from 'react-dom';
+import { ClerkProvider } from '@clerk/clerk-react';
 import App from './App';
 import reportWebVitals from './reportWebVitals';
+// Access the environment variable
+const clerkPubKey = process.env.REACT_APP_CLERK_PUBLISHABLE_KEY;
 
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(
+if (!clerkPubKey) {
+  throw new Error('Missing Clerk Publishable Key');
+}
+
+ReactDOM.render(
   <React.StrictMode>
-    <App />
-  </React.StrictMode>
+    <ClerkProvider publishableKey={clerkPubKey}>
+      <App />
+    </ClerkProvider>
+  </React.StrictMode>,
+  document.getElementById('root')
 );
 
 // If you want to start measuring performance in your app, pass a function
